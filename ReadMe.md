@@ -59,6 +59,15 @@ Input any geocoordinates or place name — get instant environmental analysis, r
 
 > Setup and installation instructions will be added as the project develops.
 
+> For getting current File structure:
+```sh
+# Install once
+Install-Module PSTree -Scope CurrentUser
+
+# Use whenever needed
+Get-PSTree -Recurse -Exclude "node_modules", ".venv", "__pycache__" | Select-Object -ExpandProperty Hierarchy
+```
+
 ---
 
 ## 🌐 Live Demo
