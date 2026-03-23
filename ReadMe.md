@@ -1,6 +1,7 @@
 # 🌍 Earth Resource Monitor (ERM)
 
-> **ERM–** *AI-powered platform that transforms satellite imagery, real-time weather, and disaster alerts into prioritized environmental insights and actionable decision intelligence for any location on Earth.*
+> **ERM–** *A web platform that turns satellite imagery, real-time weather, and disaster alerts into clear environmental insights and location-specific action plans.*
+
 
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-In%20Development-yellow.svg)]()
