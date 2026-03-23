@@ -1,9 +1,13 @@
 @import "tailwindcss";
 
 * {
-    font-family: Arial, Helvetica, sans-serif;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
 body {
-    background-color: #181818;
+  background-color: #181818;
+  /* background-image: url("https://images.unsplash.com/photo-1696552004842-8c72b901e2a8?fm=jpg&q=60&w=3000&auto=format&fit=crop");
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center; */
 }

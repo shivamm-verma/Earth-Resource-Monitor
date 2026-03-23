@@ -109,7 +109,7 @@ export default function GeoInput({ onSubmit }) {
         <button
           onClick={handleSubmit}
           disabled={!lat || !lon}
-          className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 to-emerald-500 text-white text-sm font-semibold tracking-wide hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          className="flex-1 py-3.5 rounded-2xl bg-linear-to-r from-blue-600 to-emerald-500 text-white text-sm font-semibold tracking-wide hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
         >
           Analyze Region
         </button>
