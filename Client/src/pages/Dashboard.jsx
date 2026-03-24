@@ -6,7 +6,23 @@ import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
-const API = "http://localhost:5000";
+// Backend selection: try local first, fallback to deployed
+const LOCAL_API = "http://localhost:5000";
+const DEPLOYED_API = "https://earth-resource-monitor-backend.onrender.com";
+let API = LOCAL_API;
+
+// Helper to test backend availability
+async function testBackend(url) {
+  try {
+    const res = await fetch(`${url}/api/maps?lat=0&lon=0`, {
+      method: "GET",
+      mode: "cors"
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
+}
 
 const GEE_LAYERS = [
   { key: "satellite",   label: "Satellite",    icon: "🛰",  endpoint: "maps",       tileKey: "satellite"      },
@@ -85,7 +101,26 @@ function GeeMapPanel({ lat, lon }) {
   const [endDate, setEnd]             = useState("2023-12-31");
   const [timeSeries, setTS]           = useState(null);
   const [showDates, setShowDates]     = useState(false);
+  const [apiStatus, setApiStatus]     = useState(LOCAL_API);
   const cache = useRef({});
+
+  // Check backend availability on mount
+  useEffect(() => {
+    const checkBackend = async () => {
+      const localOk = await testBackend(LOCAL_API);
+      if (!localOk) {
+        const deployedOk = await testBackend(DEPLOYED_API);
+        if (deployedOk) {
+          API = DEPLOYED_API;
+          setApiStatus(DEPLOYED_API);
+        }
+      } else {
+        API = LOCAL_API;
+        setApiStatus(LOCAL_API);
+      }
+    };
+    checkBackend();
+  }, []);
 
   const fetchLayer = async (layerKey, sd, ed) => {
     const layer = GEE_LAYERS.find(l => l.key === layerKey);
@@ -94,23 +129,29 @@ function GeeMapPanel({ lat, lon }) {
     if (cache.current[cacheKey]) {
       setTileUrl(cache.current[cacheKey].tile);
       setTS(cache.current[cacheKey].ts);
+      setError("");
       return;
     }
     setLoading(true);
     setError("");
     try {
       const url = `${API}/api/${layer.endpoint}?lat=${lat}&lon=${lon}&start_date=${sd}&end_date=${ed}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`GEE error ${res.status}`);
+      const res = await fetch(url, {
+        method: "GET",
+        mode: "cors",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (!res.ok) throw new Error(`Remote error: ${res.status}`);
       const data = await res.json();
       const tile = data.tiles?.[layer.tileKey] || data.layers?.[layer.tileKey];
-      if (!tile) throw new Error("No tile returned");
+      if (!tile) throw new Error("Tile layer not available");
       setTileUrl(tile);
       const ts = data.time_series || null;
       setTS(ts);
       cache.current[cacheKey] = { tile, ts };
     } catch (e) {
       setError(e.message);
+      console.error("Fetch error:", e);
     } finally {
       setLoading(false);
     }
@@ -121,34 +162,56 @@ function GeeMapPanel({ lat, lon }) {
   const handleExport = async (fmt) => {
     const exportLayer = activeLayer === "satellite" ? "elevation" : activeLayer;
     const url = `${API}/api/export?lat=${lat}&lon=${lon}&layer=${exportLayer}&format=${fmt}&start_date=${startDate}&end_date=${endDate}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (fmt === "json") {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `${exportLayer}_${lat}_${lon}.json`;
-      a.click();
-    } else {
-      alert(`✅ GeoTIFF export started!\nCheck Google Drive → GEE_Exports\nTask: ${data.task_id}`);
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        mode: "cors",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await res.json();
+      if (fmt === "json") {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${exportLayer}_${lat}_${lon}.json`;
+        a.click();
+      } else {
+        alert(`✅ GeoTIFF export started!\nCheck Google Drive → GEE_Exports\nTask: ${data.task_id}`);
+      }
+    } catch (e) {
+      alert(`Export failed: ${e.message}`);
     }
   };
 
-  const ndviData = timeSeries?.features?.map(f => ({
-    month: f.properties.month,
-    ndvi: f.properties.ndvi,
-  })) || [];
-  const maxNdvi = Math.max(...ndviData.map(d => d.ndvi), 1);
+  // Extract time series data - handle both GEE FeatureCollection format and direct arrays
+  const ndviData = timeSeries && timeSeries.features 
+    ? timeSeries.features
+        .map(f => ({
+          month: parseInt(f.properties?.month) || parseInt(f.properties?.month),
+          ndvi: parseFloat(f.properties?.ndvi) || 0,
+        }))
+        .filter(d => !isNaN(d.ndvi) && d.ndvi !== null && d.ndvi !== undefined)
+        .sort((a, b) => a.month - b.month)
+    : [];
+  
+  const maxNdvi = ndviData.length > 0 
+    ? Math.max(...ndviData.map(d => d.ndvi || 0))
+    : 1;
 
   return (
     <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden flex flex-col">
 
       {/* TOOLBAR */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/3">
         <div className="flex items-center gap-2">
           <Layers className="w-3.5 h-3.5 text-blue-400" />
           <p className="text-[10px] text-slate-500 uppercase tracking-widest">Satellite Layers · GEE</p>
           {loading && <div className="w-3 h-3 border border-blue-400/40 border-t-blue-400 rounded-full animate-spin" />}
+          {apiStatus && (
+            <span className="text-[9px] text-slate-600 bg-white/5 px-2 py-0.5 rounded-full border border-white/10">
+              {apiStatus === LOCAL_API ? "📍 Local" : "🌐 Cloud"}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -253,29 +316,62 @@ function GeeMapPanel({ lat, lon }) {
       {/* NDVI CHART */}
       {ndviData.length > 0 && (
         <div className="px-4 py-4 border-t border-white/5">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">
-            NDVI Monthly Time Series (MODIS · {endDate.slice(0,4)})
-          </p>
-          <div className="flex items-end gap-1" style={{ height: "60px" }}>
-            {ndviData.map((d, i) => (
-              <div key={i} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group relative">
-                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-[#0d1526] border border-white/10 text-blue-300 text-[9px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                  {MONTHS[i]}: {(d.ndvi / 10000).toFixed(3)}
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] text-slate-500 uppercase tracking-widest">
+              NDVI Monthly Time Series · {endDate.slice(0,4)}
+            </p>
+            <span className="text-[8px] text-slate-600 bg-white/5 px-2 py-1 rounded">
+              {ndviData.length} months
+            </span>
+          </div>
+          <div className="flex items-end gap-1" style={{ height: "80px" }}>
+            {ndviData.map((d) => {
+              const monthIdx = Math.max(0, Math.min(11, (d.month - 1)));
+              const monthName = MONTHS[monthIdx];
+              const normalizedValue = maxNdvi > 0 ? d.ndvi / maxNdvi : 0;
+              return (
+                <div key={d.month} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group relative">
+                  {/* Tooltip */}
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 border border-white/20 text-slate-200 text-[9px] px-3 py-2 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
+                    <div className="font-semibold">{monthName}</div>
+                    <div className="text-blue-300">
+                      {(d.ndvi || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}
+                    </div>
+                  </div>
+                  {/* Bar */}
+                  <div
+                    className="w-full rounded-sm transition-all duration-300 hover:opacity-80"
+                    style={{
+                      height: `${Math.max(normalizedValue * 100, 2)}%`,
+                      background: normalizedValue > 0.7
+                        ? "linear-gradient(to top, #10b981, #6ee7b7)"
+                        : normalizedValue > 0.4
+                        ? "linear-gradient(to top, #3b82f6, #93c5fd)"
+                        : normalizedValue > 0.1
+                        ? "linear-gradient(to top, #f59e0b, #fcd34d)"
+                        : "linear-gradient(to top, #8b5cf6, #a78bfa)"
+                    }}
+                  />
+                  <span className="text-[8px] text-slate-600 mt-1">{monthName.charAt(0)}</span>
                 </div>
-                <div
-                  className="w-full rounded-sm transition-all duration-300"
-                  style={{
-                    height: `${(d.ndvi / maxNdvi) * 100}%`,
-                    background: d.ndvi / maxNdvi > 0.7
-                      ? "linear-gradient(to top, #10b981, #6ee7b7)"
-                      : d.ndvi / maxNdvi > 0.4
-                      ? "linear-gradient(to top, #3b82f6, #93c5fd)"
-                      : "linear-gradient(to top, #f59e0b, #fcd34d)"
-                  }}
-                />
-                <span className="text-[8px] text-slate-600">{MONTHS[i].charAt(0)}</span>
+              );
+            })}
+          </div>
+          <div className="mt-3 text-[9px] text-slate-500">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 rounded-sm" style={{background: "linear-gradient(to top, #10b981, #6ee7b7)"}}></div>
+                <span>High veg</span>
               </div>
-            ))}
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 rounded-sm" style={{background: "linear-gradient(to top, #3b82f6, #93c5fd)"}}></div>
+                <span>Moderate</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 rounded-sm" style={{background: "linear-gradient(to top, #f59e0b, #fcd34d)"}}></div>
+                <span>Low veg</span>
+              </div>
+            </div>
           </div>
         </div>
       )}

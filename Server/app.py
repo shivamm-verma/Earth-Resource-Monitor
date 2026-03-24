@@ -40,7 +40,19 @@ CREDENTIALS = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_data=json.dumps(
 ee.Initialize(CREDENTIALS)
 
 app = Flask(__name__)
-CORS(app)
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": ["http://localhost:*", "https://localhost:*", "http://127.0.0.1:*"],
+            "methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": True,
+            "max_age": 3600
+        }
+    },
+    send_wildcard=False
+)
 
 
 # ─────────────────────────────────────────────
