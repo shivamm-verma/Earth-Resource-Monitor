@@ -1,20 +1,35 @@
 import { useLocation, useNavigate } from "react-router-dom";
 import WeatherBox from "../components/WeatherBox";
-import { useState, useCallback } from "react";
-import { Copy, Check, CloudSun } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { Copy, Check, CloudSun, Layers, Download, Calendar } from "lucide-react";
+import { MapContainer, TileLayer, useMap } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const API = "http://localhost:5000";
+
+const GEE_LAYERS = [
+  { key: "satellite",   label: "Satellite",    icon: "🛰",  endpoint: "maps",       tileKey: "satellite"      },
+  { key: "ndvi",        label: "NDVI",          icon: "🌿",  endpoint: "vegetation", tileKey: "sentinel2_ndvi" },
+  { key: "evi",         label: "EVI",           icon: "🌱",  endpoint: "vegetation", tileKey: "modis_evi"      },
+  { key: "landcover",   label: "Land Cover",    icon: "🗺",  endpoint: "landcover",  tileKey: "esa_worldcover" },
+  { key: "water",       label: "Water",         icon: "💧",  endpoint: "water",      tileKey: "jrc_occurrence" },
+  { key: "elevation",   label: "Elevation",     icon: "⛰",  endpoint: "terrain",    tileKey: "srtm_elevation" },
+  { key: "fire",        label: "Fire",          icon: "🔥",  endpoint: "hazards",    tileKey: "modis_fire"     },
+  { key: "nightlights", label: "Night Lights",  icon: "🌃",  endpoint: "urban",      tileKey: "viirs_nightlights"},
+  { key: "temperature", label: "Temperature",   icon: "🌡",  endpoint: "climate",    tileKey: "era5_temperature"},
+  { key: "flood",       label: "Flood Risk",    icon: "🌊",  endpoint: "hazards",    tileKey: "flood_extent"   },
+];
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
 function getCoords(formData) {
   if (!formData) return null;
   if (formData.type === "place") {
-    return {
-      lat: formData.coordinates?.lat,
-      lon: formData.coordinates?.lng,
-    };
+    return { lat: formData.coordinates?.lat, lon: formData.coordinates?.lng };
   }
-  return {
-    lat: formData.latitude,
-    lon: formData.longitude,
-  };
+  return { lat: formData.latitude, lon: formData.longitude };
 }
 
 function getContinent(countryCode) {
@@ -29,6 +44,7 @@ function getContinent(countryCode) {
   return map[countryCode] || "—";
 }
 
+// ─── SHARED UI COMPONENTS ─────────────────────────────────────────────────────
 function StatCard({ label, value, sub, accent }) {
   return (
     <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-1">
@@ -51,16 +67,233 @@ function Section({ title, children }) {
   );
 }
 
+// ─── MAP UPDATER ──────────────────────────────────────────────────────────────
+function MapUpdater({ center }) {
+  const map = useMap();
+  useEffect(() => { if (center) map.setView(center, 10); }, [center]);
+  return null;
+}
+
+// ─── GEE MAP PANEL ────────────────────────────────────────────────────────────
+function GeeMapPanel({ lat, lon }) {
+  const [activeLayer, setActiveLayer] = useState("satellite");
+  const [tileUrl, setTileUrl]         = useState(null);
+  const [loading, setLoading]         = useState(false);
+  const [error, setError]             = useState("");
+  const [opacity, setOpacity]         = useState(0.85);
+  const [startDate, setStart]         = useState("2023-01-01");
+  const [endDate, setEnd]             = useState("2023-12-31");
+  const [timeSeries, setTS]           = useState(null);
+  const [showDates, setShowDates]     = useState(false);
+  const cache = useRef({});
+
+  const fetchLayer = async (layerKey, sd, ed) => {
+    const layer = GEE_LAYERS.find(l => l.key === layerKey);
+    if (!layer) return;
+    const cacheKey = `${layerKey}_${lat}_${lon}_${sd}_${ed}`;
+    if (cache.current[cacheKey]) {
+      setTileUrl(cache.current[cacheKey].tile);
+      setTS(cache.current[cacheKey].ts);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const url = `${API}/api/${layer.endpoint}?lat=${lat}&lon=${lon}&start_date=${sd}&end_date=${ed}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`GEE error ${res.status}`);
+      const data = await res.json();
+      const tile = data.tiles?.[layer.tileKey] || data.layers?.[layer.tileKey];
+      if (!tile) throw new Error("No tile returned");
+      setTileUrl(tile);
+      const ts = data.time_series || null;
+      setTS(ts);
+      cache.current[cacheKey] = { tile, ts };
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchLayer(activeLayer, startDate, endDate); }, []);
+
+  const handleExport = async (fmt) => {
+    const exportLayer = activeLayer === "satellite" ? "elevation" : activeLayer;
+    const url = `${API}/api/export?lat=${lat}&lon=${lon}&layer=${exportLayer}&format=${fmt}&start_date=${startDate}&end_date=${endDate}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (fmt === "json") {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${exportLayer}_${lat}_${lon}.json`;
+      a.click();
+    } else {
+      alert(`✅ GeoTIFF export started!\nCheck Google Drive → GEE_Exports\nTask: ${data.task_id}`);
+    }
+  };
+
+  const ndviData = timeSeries?.features?.map(f => ({
+    month: f.properties.month,
+    ndvi: f.properties.ndvi,
+  })) || [];
+  const maxNdvi = Math.max(...ndviData.map(d => d.ndvi), 1);
+
+  return (
+    <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden flex flex-col">
+
+      {/* TOOLBAR */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+        <div className="flex items-center gap-2">
+          <Layers className="w-3.5 h-3.5 text-blue-400" />
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest">Satellite Layers · GEE</p>
+          {loading && <div className="w-3 h-3 border border-blue-400/40 border-t-blue-400 rounded-full animate-spin" />}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowDates(s => !s)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-all"
+          >
+            <Calendar className="w-3 h-3 text-slate-400" />
+            <span className="text-[10px] text-slate-400">{startDate.slice(0,7)} → {endDate.slice(0,7)}</span>
+          </button>
+          <button onClick={() => handleExport("json")} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-emerald-500/10 hover:border-emerald-500/30 transition-all">
+            <Download className="w-3 h-3 text-slate-400" />
+            <span className="text-[10px] text-slate-400">JSON</span>
+          </button>
+          <button onClick={() => handleExport("geotiff")} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-emerald-500/10 hover:border-emerald-500/30 transition-all">
+            <Download className="w-3 h-3 text-slate-400" />
+            <span className="text-[10px] text-slate-400">GeoTIFF</span>
+          </button>
+        </div>
+      </div>
+
+      {/* DATE PICKER (collapsible) */}
+      {showDates && (
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-white/5 bg-white/3">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 uppercase tracking-widest">From</span>
+            <input
+              type="date" value={startDate}
+              onChange={e => setStart(e.target.value)}
+              className="bg-white/5 border border-white/10 text-slate-300 text-xs px-2 py-1 rounded-lg outline-none focus:border-blue-500/50"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 uppercase tracking-widest">To</span>
+            <input
+              type="date" value={endDate}
+              onChange={e => setEnd(e.target.value)}
+              className="bg-white/5 border border-white/10 text-slate-300 text-xs px-2 py-1 rounded-lg outline-none focus:border-blue-500/50"
+            />
+          </div>
+          <button
+            onClick={() => { fetchLayer(activeLayer, startDate, endDate); setShowDates(false); }}
+            className="px-3 py-1 rounded-lg bg-blue-500/20 border border-blue-500/30 text-blue-400 text-[10px] uppercase tracking-widest hover:bg-blue-500/30 transition-all"
+          >
+            Apply
+          </button>
+        </div>
+      )}
+
+      {/* LAYER PILLS */}
+      <div className="flex gap-2 px-4 py-3 overflow-x-auto border-b border-white/5" style={{ scrollbarWidth: "none" }}>
+        {GEE_LAYERS.map(l => (
+          <button
+            key={l.key}
+            onClick={() => { setActiveLayer(l.key); fetchLayer(l.key, startDate, endDate); }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] whitespace-nowrap transition-all shrink-0 ${
+              activeLayer === l.key
+                ? "bg-blue-500/20 border-blue-500/40 text-blue-300"
+                : "bg-white/5 border-white/10 text-slate-500 hover:text-slate-300 hover:border-white/20"
+            }`}
+          >
+            <span>{l.icon}</span> {l.label}
+          </button>
+        ))}
+      </div>
+
+      {/* MAP */}
+      <div className="relative" style={{ height: "360px" }}>
+        {loading && (
+          <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-sm">
+            <div className="w-8 h-8 border border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
+            <p className="text-[10px] text-blue-400 uppercase tracking-widest">Fetching Satellite Data</p>
+          </div>
+        )}
+        {error && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 bg-red-500/10 border border-red-500/30 text-red-400 text-[10px] px-4 py-2 rounded-full">
+            ⚠ {error}
+          </div>
+        )}
+        <MapContainer center={[lat, lon]} zoom={10} style={{ height: "100%", width: "100%" }} zoomControl={true}>
+          <MapUpdater center={[lat, lon]} />
+          <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" attribution="CartoDB" />
+          {tileUrl && <TileLayer key={tileUrl} url={tileUrl} opacity={opacity} />}
+        </MapContainer>
+
+        {/* Opacity slider */}
+        <div className="absolute bottom-3 left-3 z-50 flex items-center gap-2 bg-black/50 backdrop-blur-sm border border-white/10 rounded-full px-3 py-1.5">
+          <span className="text-[9px] text-slate-500 uppercase tracking-widest">Opacity</span>
+          <input
+            type="range" min="0" max="1" step="0.05" value={opacity}
+            onChange={e => setOpacity(parseFloat(e.target.value))}
+            className="w-16 accent-blue-400"
+          />
+          <span className="text-[9px] text-slate-400">{Math.round(opacity * 100)}%</span>
+        </div>
+
+        {/* Coords HUD */}
+        <div className="absolute bottom-3 right-3 z-50 bg-black/50 backdrop-blur-sm border border-white/10 rounded-full px-3 py-1.5 text-[9px] text-slate-400 font-mono">
+          {lat.toFixed(4)}° N · {lon.toFixed(4)}° E
+        </div>
+      </div>
+
+      {/* NDVI CHART */}
+      {ndviData.length > 0 && (
+        <div className="px-4 py-4 border-t border-white/5">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">
+            NDVI Monthly Time Series (MODIS · {endDate.slice(0,4)})
+          </p>
+          <div className="flex items-end gap-1" style={{ height: "60px" }}>
+            {ndviData.map((d, i) => (
+              <div key={i} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group relative">
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-[#0d1526] border border-white/10 text-blue-300 text-[9px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                  {MONTHS[i]}: {(d.ndvi / 10000).toFixed(3)}
+                </div>
+                <div
+                  className="w-full rounded-sm transition-all duration-300"
+                  style={{
+                    height: `${(d.ndvi / maxNdvi) * 100}%`,
+                    background: d.ndvi / maxNdvi > 0.7
+                      ? "linear-gradient(to top, #10b981, #6ee7b7)"
+                      : d.ndvi / maxNdvi > 0.4
+                      ? "linear-gradient(to top, #3b82f6, #93c5fd)"
+                      : "linear-gradient(to top, #f59e0b, #fcd34d)"
+                  }}
+                />
+                <span className="text-[8px] text-slate-600">{MONTHS[i].charAt(0)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MAIN DASHBOARD ───────────────────────────────────────────────────────────
 export default function Dashboard() {
   const { state } = useLocation();
-  const navigate = useNavigate();
-  const formData = state?.formData;
-  const coords = getCoords(formData);
+  const navigate  = useNavigate();
+  const formData  = state?.formData;
+  const coords    = getCoords(formData);
 
-  const [modelStatus] = useState("idle");
-  const [weatherData, setWeatherData] = useState(null);
+  const [modelStatus]   = useState("idle");
+  const [weatherData, setWeatherData]   = useState(null);
   const [locationMeta, setLocationMeta] = useState(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied]             = useState(false);
 
   const handleCopy = () => {
     if (!weatherData) return;
@@ -71,15 +304,13 @@ export default function Dashboard() {
 
   useCallback(() => {
     if (!coords?.lat || !coords?.lon) return;
-    fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${coords.lat}&lon=${coords.lon}&format=json`
-    )
-      .then((r) => r.json())
-      .then((data) => {
+    fetch(`https://nominatim.openstreetmap.org/reverse?lat=${coords.lat}&lon=${coords.lon}&format=json`)
+      .then(r => r.json())
+      .then(data => {
         const addr = data.address || {};
         setLocationMeta({
-          country: addr.country || "—",
-          state: addr.state || addr.region || "—",
+          country:   addr.country || "—",
+          state:     addr.state || addr.region || "—",
           continent: getContinent(addr.country_code?.toUpperCase()),
         });
       })
@@ -102,15 +333,13 @@ export default function Dashboard() {
     );
   }
 
-  const displayName =
-    formData.type === "place"
-      ? formData.coordinates?.displayName || formData.place
-      : `${formData.latitude?.toFixed(4)}, ${formData.longitude?.toFixed(4)}`;
+  const displayName = formData.type === "place"
+    ? formData.coordinates?.displayName || formData.place
+    : `${formData.latitude?.toFixed(4)}, ${formData.longitude?.toFixed(4)}`;
 
-  const shortName =
-    formData.type === "place"
-      ? formData.place
-      : `${formData.latitude?.toFixed(2)}°, ${formData.longitude?.toFixed(2)}°`;
+  const shortName = formData.type === "place"
+    ? formData.place
+    : `${formData.latitude?.toFixed(2)}°, ${formData.longitude?.toFixed(2)}°`;
 
   return (
     <main className="relative min-h-screen bg-[url('/stars-bg-verydark.avif')] bg-cover bg-center text-white overflow-x-hidden">
@@ -120,13 +349,11 @@ export default function Dashboard() {
 
       <div className="relative z-10 max-w-6xl mx-auto px-5 md:px-10 py-8">
 
-        {/* Top nav */}
+        {/* TOP NAV */}
         <div className="flex items-center justify-between mb-10">
           <div className="flex items-center gap-3">
             <img src="/newERM-logo.png" alt="ERM" className="w-7 h-7 rounded-full" />
-            <span className="text-xs font-medium tracking-[0.25em] text-slate-500 uppercase">
-              Earth Resource Monitor
-            </span>
+            <span className="text-xs font-medium tracking-[0.25em] text-slate-500 uppercase">Earth Resource Monitor</span>
           </div>
           <button
             onClick={() => navigate("/")}
@@ -136,34 +363,29 @@ export default function Dashboard() {
           </button>
         </div>
 
-        {/* Hero header */}
+        {/* HERO HEADER */}
         <div className="mb-10">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-[10px] uppercase tracking-widest text-slate-500">Analysis Result</span>
             <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${
-              modelStatus === "running"
-                ? "text-amber-400 border-amber-500/30 bg-amber-500/10"
-                : modelStatus === "done"
-                ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
-                : modelStatus === "error"
-                ? "text-red-400 border-red-500/30 bg-red-500/10"
-                : "text-slate-400 border-white/10 bg-white/5"
+              modelStatus === "running" ? "text-amber-400 border-amber-500/30 bg-amber-500/10"
+              : modelStatus === "done"  ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
+              : modelStatus === "error" ? "text-red-400 border-red-500/30 bg-red-500/10"
+              : "text-slate-400 border-white/10 bg-white/5"
             }`}>
-              {modelStatus === "running" ? "● Model Running" :
-               modelStatus === "done"    ? "✓ Complete" :
-               modelStatus === "error"   ? "✕ Error" :
-               "○ Model Idle"}
+              {modelStatus === "running" ? "● Model Running"
+               : modelStatus === "done"  ? "✓ Complete"
+               : modelStatus === "error" ? "✕ Error"
+               : "○ Model Idle"}
             </span>
           </div>
-          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-white">
-            {shortName}
-          </h1>
+          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-white">{shortName}</h1>
           <p className="text-slate-500 text-sm mt-1 max-w-xl truncate">{displayName}</p>
           {locationMeta && (
             <div className="flex items-center gap-2 mt-2 flex-wrap">
               {[locationMeta.continent, locationMeta.country, locationMeta.state]
-                .filter((v) => v && v !== "—")
-                .map((tag) => (
+                .filter(v => v && v !== "—")
+                .map(tag => (
                   <span key={tag} className="text-[10px] px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-slate-400 tracking-wide">
                     {tag}
                   </span>
@@ -172,65 +394,34 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Quick stats row */}
+        {/* QUICK STATS */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-10">
           <StatCard label="Analysis Type" value={formData.analysisType || "Full"} sub="Selected mode" accent="text-blue-400" />
           <StatCard label="Input Type" value={formData.type === "place" ? "Place Name" : "Coordinates"} sub={formData.type === "coordinates" ? `±${formData.radiusKm} km radius` : "Geocoded"} />
-          {coords?.lat && <StatCard label="Latitude" value={`${parseFloat(coords.lat).toFixed(4)}°`} sub="North / South" accent="text-emerald-400" />}
-          {coords?.lon && <StatCard label="Longitude" value={`${parseFloat(coords.lon).toFixed(4)}°`} sub="East / West" accent="text-emerald-400" />}
+          {coords?.lat && <StatCard label="Latitude"  value={`${parseFloat(coords.lat).toFixed(4)}°`} sub="North / South" accent="text-emerald-400" />}
+          {coords?.lon && <StatCard label="Longitude" value={`${parseFloat(coords.lon).toFixed(4)}°`} sub="East / West"   accent="text-emerald-400" />}
         </div>
 
-        {/* Main grid */}
+        {/* MAIN GRID */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
 
-          {/* LEFT col */}
+          {/* LEFT COL */}
           <div className="md:col-span-2 flex flex-col gap-6">
 
-            <Section title="Segmented Satellite Image">
-              <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden aspect-video flex items-center justify-center relative">
-                <div className="absolute inset-0 bg-linear-to-br from-blue-900/20 to-emerald-900/20" />
-                <div className="text-center z-10">
-                  <div className="w-10 h-10 rounded-full border border-white/10 bg-white/5 flex items-center justify-center mx-auto mb-3">
-                    <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5M4.5 3h15A1.5 1.5 0 0121 4.5v15a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 19.5v-15A1.5 1.5 0 014.5 3z"/>
-                    </svg>
-                  </div>
-                  <p className="text-slate-500 text-xs">Segmented map output will appear here</p>
-                  <p className="text-slate-600 text-[10px] mt-1">Awaiting model response</p>
-                </div>
-              </div>
-            </Section>
+            {/* GEE MAP — replaces old empty satellite placeholder */}
+            {coords?.lat && coords?.lon && (
+              <Section title="Satellite Maps · Google Earth Engine">
+                <GeeMapPanel lat={parseFloat(coords.lat)} lon={parseFloat(coords.lon)} />
+              </Section>
+            )}
 
-            <Section title="Model Output — Raw JSON">
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 min-h-35">
-                {modelStatus === "done" ? (
-                  <pre className="text-xs text-emerald-400 font-mono overflow-x-auto">{"{ }"}</pre>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-1.5 h-1.5 rounded-full ${modelStatus === "running" ? "bg-amber-400 animate-pulse" : "bg-slate-600"}`} />
-                      <p className="text-slate-500 text-xs">
-                        {modelStatus === "running" ? "Model is processing..." : "Waiting for model to run"}
-                      </p>
-                    </div>
-                    <p className="text-[10px] text-slate-600 uppercase tracking-widest mt-2">Input Payload</p>
-                    <pre className="text-xs text-slate-400 font-mono overflow-x-auto">
-                      {JSON.stringify(formData, null, 2)}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            </Section>
-
-            {/* Raw Weather JSON */}
+            {/* RAW WEATHER JSON */}
             <Section title="Weather Data — Raw JSON">
               <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5">
                   <div className="flex items-center gap-2">
                     <CloudSun className="w-3.5 h-3.5 text-sky-400" />
-                    <p className="text-[10px] text-slate-500 uppercase tracking-widest">
-                      OpenWeatherMap · Live Response
-                    </p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest">OpenWeatherMap · Live Response</p>
                   </div>
                   <button
                     onClick={handleCopy}
@@ -238,15 +429,9 @@ export default function Dashboard() {
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     {copied ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span className="text-[10px] text-emerald-400">Copied</span>
-                      </>
+                      <><Check className="w-3 h-3 text-emerald-400" /><span className="text-[10px] text-emerald-400">Copied</span></>
                     ) : (
-                      <>
-                        <Copy className="w-3 h-3 text-slate-400" />
-                        <span className="text-[10px] text-slate-400">Copy</span>
-                      </>
+                      <><Copy className="w-3 h-3 text-slate-400" /><span className="text-[10px] text-slate-400">Copy</span></>
                     )}
                   </button>
                 </div>
@@ -265,16 +450,17 @@ export default function Dashboard() {
               </div>
             </Section>
 
+            {/* PIPELINE STATUS */}
             <Section title="Pipeline Status">
               <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-2.5">
                 {[
-                  { step: "Input received",       done: true },
-                  { step: "Coordinates resolved", done: !!coords?.lat },
-                  { step: "Weather data fetched", done: !!weatherData },
-                  { step: "Satellite pull",        done: false },
-                  { step: "Model segmentation",   done: false },
-                  { step: "Risk assessment",       done: false },
-                  { step: "Report generation",     done: false },
+                  { step: "Input received",        done: true           },
+                  { step: "Coordinates resolved",  done: !!coords?.lat  },
+                  { step: "Weather data fetched",  done: !!weatherData  },
+                  { step: "Satellite pull (GEE)",  done: true           },
+                  { step: "Model segmentation",    done: false          },
+                  { step: "Risk assessment",        done: false          },
+                  { step: "Report generation",      done: false          },
                 ].map(({ step, done }) => (
                   <div key={step} className="flex items-center gap-3">
                     <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
@@ -294,7 +480,7 @@ export default function Dashboard() {
 
           </div>
 
-          {/* RIGHT col */}
+          {/* RIGHT COL */}
           <div className="flex flex-col gap-6">
 
             <Section title="Live Weather">
@@ -325,7 +511,7 @@ export default function Dashboard() {
 
             <Section title="Risk Zones">
               <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-2">
-                <p className="text-xs text-slate-600">Risk zone data will populate here after model run.</p>
+                <p className="text-xs text-slate-600">Risk zone data will populate after model run.</p>
                 {["High Risk", "Moderate", "Low Risk"].map((zone, i) => (
                   <div key={zone} className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -341,9 +527,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <p className="text-center text-xs text-slate-700 mt-12 tracking-wide">
-          ERM · Earth Resource Monitor
-        </p>
+        <p className="text-center text-xs text-slate-700 mt-12 tracking-wide">ERM · Earth Resource Monitor</p>
       </div>
     </main>
   );
