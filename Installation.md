@@ -89,7 +89,14 @@ deactivate
 ```
 ---
 
-Example fetch url: 
+- Example fetch url: (**Local**)
 ```sh
 http://127.0.0.1:5000/api/vegetation?lat=28.61&lon=77.20&start_date=2023-01-01&end_date=2023-12-31
 ```
+[Link to above 1](http://127.0.0.1:5000/api/vegetation?lat=28.61&lon=77.20&start_date=2023-01-01&end_date=2023-12-31)
+
+- Example fetch url: (**Deployed**)
+```sh
+https://earth-resource-monitor-backend.onrender.com/api/vegetation?lat=28.61&lon=77.20&start_date=2023-01-01&end_date=2023-12-31
+```
+[Link to above 2](https://earth-resource-monitor-backend.onrender.com/api/vegetation?lat=28.61&lon=77.20&start_date=2023-01-01&end_date=2023-12-31)

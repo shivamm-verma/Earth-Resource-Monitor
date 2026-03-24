@@ -17,6 +17,14 @@ Input any geocoordinates or place name — get instant environmental analysis, r
 
 ---
 
+##  Deployments
+
+| Deployment | Link |
+|---|---|
+Frontend | [https://earth-resource-monitor.vercel.app/](https://earth-resource-monitor.vercel.app/)
+Backend | [https://earth-resource-monitor-backend.onrender.com/api/](https://earth-resource-monitor-backend.onrender.com/api/vegetation?lat=28.61&lon=77.20&start_date=2023-01-01&end_date=2023-12-31)
+
+
 ##  Key Features
 
 | Feature | Description |
