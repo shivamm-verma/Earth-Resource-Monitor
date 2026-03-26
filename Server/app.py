@@ -3,7 +3,7 @@ import requests
 import json
 import os
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from google.auth.transport.requests import Request
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -44,7 +44,14 @@ CORS(
     app,
     resources={
         r"/api/*": {
-            "origins": ["http://localhost:*", "https://localhost:*", "http://127.0.0.1:*"],
+            "origins": [
+                "http://localhost:5173",
+                "http://localhost:4173",
+                "http://127.0.0.1:5173",
+                "https://earth-resource-monitor.vercel.app",
+                "https://*.vercel.app",
+            ],
+
             "methods": ["GET", "POST", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
             "supports_credentials": True,
@@ -85,6 +92,11 @@ def make_region(lat, lon, buffer_km=50):
 # TILE PROXY  (fixes 403 errors in browser)
 # ─────────────────────────────────────────────
 @app.route('/tiles/<path:tile_path>')
+@cross_origin(origins=[
+    "http://localhost:5173",
+    "https://earth-resource-monitor.vercel.app",
+    "https://*.vercel.app",
+])
 def proxy_tile(tile_path):
     gee_url = f"https://earthengine.googleapis.com/v1/{tile_path}"
     CREDENTIALS.refresh(Request())
