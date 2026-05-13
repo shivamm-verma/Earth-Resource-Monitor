@@ -1097,6 +1097,31 @@ export default function Dashboard() {
                 ))}
               </div>
             </Section>
+
+            <Section title="Weather Alerts">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-3">
+                {weatherData && weatherData.alerts && weatherData.alerts.length > 0 ? (
+                  weatherData.alerts.map((alert, index) => (
+                    <div key={index} className="border border-red-500/20 bg-red-500/5 rounded-xl p-3">
+                      <p className="text-xs text-red-400 font-semibold mb-1">
+                        {alert.event || "Weather Alert"}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mb-1">
+                        {alert.sender_name}
+                      </p>
+                      <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
+                        {alert.description}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-slate-600">
+                    No active weather alerts for this region.
+                  </p>
+                )}
+              </div>
+            </Section>
+
           </div>
         </div>
 
